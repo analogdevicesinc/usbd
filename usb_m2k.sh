@@ -3,11 +3,8 @@
 mount configfs -t configfs /sys/kernel/config
 mkdir /sys/kernel/config/usb_gadget/ffs
 
-# Real ADI idVendor
 echo 0x0456 > /sys/kernel/config/usb_gadget/ffs/idVendor
-
-# Dummy idProduct
-echo 0xa4a4 > /sys/kernel/config/usb_gadget/ffs/idProduct
+echo 0xb672 > /sys/kernel/config/usb_gadget/ffs/idProduct
 
 mkdir /sys/kernel/config/usb_gadget/ffs/strings/0x409
 echo "Analog Devices Inc." > /sys/kernel/config/usb_gadget/ffs/strings/0x409/manufacturer
