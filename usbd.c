@@ -10,7 +10,9 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <sys/mount.h>
 #include <unistd.h>
+#include <usbg/usbg.h>
 
 #define NAME u8"IIO"
 
@@ -256,6 +258,98 @@ static void handle_event(int fd, int argc, char **argv,
 	}
 }
 
+static int setup_ffs(usbg_state **s, usbg_gadget **g)
+{
+	usbg_gadget *old_g;
+	usbg_config *c;
+	usbg_function *f_ffs;
+	int usbg_ret;
+
+	usbg_gadget_attrs g_attrs = {
+			0x0200, /* bcdUSB */
+			0x00, /* Defined at interface level */
+			0x00, /* subclass */
+			0x00, /* device protocol */
+			0x0040, /* Max allowed packet size */
+			0x0456,
+			0xb672,
+			0x0001, /* Verson of device */
+	};
+
+	usbg_gadget_strs g_strs = {
+			"00000000", /* Serial number */
+			"Analog Devices Inc.", /* Manufacturer */
+			"M2K" /* Product string */
+	};
+
+	usbg_config_strs c_strs = {
+			"M2K IIO"
+	};
+
+	usbg_ret = usbg_init("/sys/kernel/config", s);
+	if (usbg_ret != USBG_SUCCESS) {
+		fprintf(stderr, "Error on USB gadget init\n");
+		fprintf(stderr, "Error: %s : %s\n", usbg_error_name(usbg_ret),
+				usbg_strerror(usbg_ret));
+		return -1;
+	}
+
+	old_g = usbg_get_gadget(*s, "m2k");
+	if (old_g) {
+		printf("Removing old gadget\n");
+		usbg_rm_gadget(old_g, USBG_RM_RECURSE);
+	}
+
+	usbg_ret = usbg_create_gadget(*s, "m2k", &g_attrs, &g_strs, g);
+	if (usbg_ret != USBG_SUCCESS) {
+		fprintf(stderr, "Error on create gadget\n");
+		fprintf(stderr, "Error: %s : %s\n", usbg_error_name(usbg_ret),
+				usbg_strerror(usbg_ret));
+		goto out;
+	}
+
+	usbg_ret = usbg_create_function(*g, F_FFS, "m2k", NULL, &f_ffs);
+	if (usbg_ret != USBG_SUCCESS) {
+		fprintf(stderr, "Error creating ffs1 function\n");
+		fprintf(stderr, "Error: %s : %s\n", usbg_error_name(usbg_ret),
+				usbg_strerror(usbg_ret));
+		goto out;
+	}
+
+	usbg_ret = usbg_create_config(*g, 1, NULL, NULL, &c_strs, &c);
+	if (usbg_ret != USBG_SUCCESS) {
+		fprintf(stderr, "Error creating config\n");
+		fprintf(stderr, "Error: %s : %s\n", usbg_error_name(usbg_ret),
+				usbg_strerror(usbg_ret));
+		goto out;
+	}
+
+	usbg_ret = usbg_add_config_function(c, "m2k", f_ffs);
+	if (usbg_ret != USBG_SUCCESS) {
+		fprintf(stderr, "Error adding ffs\n");
+		fprintf(stderr, "Error: %s : %s\n", usbg_error_name(usbg_ret),
+				usbg_strerror(usbg_ret));
+		goto out;
+	}
+
+	return 0;
+out:
+	usbg_cleanup(*s);
+	*s = NULL;
+	return -1;
+}
+
+static int mount_ffs(const char *mount_path)
+{
+	return mount("m2k", mount_path, "functionfs", 0, NULL);
+}
+
+static int umount_ffs(const char *mount_path)
+{
+	umount(mount_path);
+	return 0;
+}
+
 static sig_atomic_t keep_running = 1;
 
 static void sig_handler(int sig)
@@ -273,34 +367,56 @@ static void set_handler(int signal_nb, void (*handler)(int))
 
 int main(int argc, char **argv)
 {
+	const char *mount_path;
 	int fd, ret;
 	unsigned int i;
+	usbg_state *s;
+	usbg_gadget *g;
 
 	if (argc < 3) {
-		printf("Usage: %s ep0_node cmd ...\n", argv[0]);
+		printf("Usage: %s udc_name fs_mount cmd ...\n", argv[0]);
 		return EXIT_FAILURE;
 	}
 
-	argv_new = malloc((argc - 1) * sizeof(*argv));
-	if (!argv_new)
+	mount_path = argv[2];
+
+	ret = setup_ffs(&s, &g);
+	if (ret < 0)
 		return EXIT_FAILURE;
 
-	memcpy(argv_new, argv + 2, (argc - 2) * sizeof(*argv));
-	argv_new[argc - 2] = NULL;
+	ret = mount_ffs(mount_path);
+	if (ret < 0) {
+		perror("Unable to mount functionfs");
+		ret = EXIT_FAILURE;
+		goto cleanup_usbg;
+	}
 
-	snprintf(ep0_path, sizeof(ep0_path), "%s", argv[1]);
+	snprintf(ep0_path, sizeof(ep0_path), "%s/ep0", mount_path);
 
 	fd = open(ep0_path, O_RDWR);
 	if (fd < 0) {
 		perror("Unable to open ep0 node");
-		return EXIT_FAILURE;
+		ret = EXIT_FAILURE;
+		goto cleanup_mount;
 	}
 
 	ret = write_header(fd);
 	if (ret < 0) {
 		perror("Unable to write descriptor");
-		return EXIT_FAILURE;
+		ret = EXIT_FAILURE;
+		goto cleanup_fd;
 	}
+
+	usbg_enable_gadget(g, argv[1]);
+
+	argv_new = malloc((argc - 1) * sizeof(*argv));
+	if (!argv_new) {
+		ret = EXIT_FAILURE;
+		goto cleanup_disable;
+	}
+
+	memcpy(argv_new, argv + 3, (argc - 3) * sizeof(*argv));
+	argv_new[argc - 3] = NULL;
 
 	set_handler(SIGHUP, &sig_handler);
 	set_handler(SIGINT, &sig_handler);
@@ -338,6 +454,14 @@ int main(int argc, char **argv)
 
 	free(argv_new);
 
+cleanup_disable:
+	usbg_disable_gadget(g);
+cleanup_fd:
 	close(fd);
+cleanup_mount:
+	umount_ffs(mount_path);
+cleanup_usbg:
+	usbg_rm_gadget(g, USBG_RM_RECURSE);
+	usbg_cleanup(s);
 	return ret;
 }

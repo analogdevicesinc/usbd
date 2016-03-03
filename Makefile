@@ -2,6 +2,7 @@ TARGETS := usbd usbclient
 
 CFLAGS := -std=gnu11 -Wall
 CPPFLAGS := -D_GNU_SOURCE=1
+LDLIBS_USBD := -lusbg
 LDLIBS_USBCLIENT := -lusb-1.0 -lpthread
 
 PREFIX ?= /usr/local
@@ -10,10 +11,10 @@ PREFIX ?= /usr/local
 all: $(TARGETS)
 
 usbd: usbd.o
-	$(CC) $(CFLAGS) $(LDFLAGS) $(LDLIBS) $^ -o $@
+	$(CC) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) $(LDLIBS_USBD) -o $@
 
 usbclient: usbclient.o
-	$(CC) $(CFLAGS) $(LDFLAGS) $(LDLIBS) $(LDLIBS_USBCLIENT) $^ -o $@
+	$(CC) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) $(LDLIBS_USBCLIENT) -o $@
 
 .PHONY: clean
 clean:
