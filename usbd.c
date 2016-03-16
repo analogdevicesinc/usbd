@@ -19,6 +19,11 @@
 
 #define NB_PIPES 3
 
+#define IIO_USD_CMD_RESET_PIPES 0
+#define IIO_USD_CMD_OPEN_PIPE 1
+#define IIO_USD_CMD_CLOSE_PIPE 2
+
+
 /* ******************** */
 
 struct usb_ffs_header {
@@ -144,6 +149,82 @@ static int stdio_redirect(const char *ep0, unsigned int i)
 	return 0;
 }
 
+struct usb_pipe {
+	pid_t child;
+};
+
+static struct usb_pipe usb_pipes[NB_PIPES];
+static char ep0_path[256];
+static char **argv_new;
+
+static void usb_open_pipe(unsigned int ep)
+{
+	struct usb_pipe *pipe;
+	int child;
+
+	if (ep >= NB_PIPES)
+		return;
+
+	pipe = &usb_pipes[ep];
+
+	if (pipe->child)
+		return;
+
+	child = fork();
+	if (child) {
+		pipe->child = child;
+		return;
+	}
+
+	if (stdio_redirect(ep0_path, ep)) {
+		fprintf(stderr, "Unable to do IO redirection\n");
+		exit(EXIT_FAILURE);
+	}
+
+	if (execvp(*argv_new, argv_new) < 0) {
+		fprintf(stderr, "Execvp failed\n");
+		exit(EXIT_FAILURE);
+	}
+}
+
+static void usb_close_pipe(unsigned int ep)
+{
+	struct usb_pipe *pipe;
+
+	if (ep >= NB_PIPES)
+		return;
+
+	pipe = &usb_pipes[ep];
+
+	if (pipe->child == 0)
+		return;
+
+	kill(pipe->child, SIGTERM);
+	/* Anytime soon now */
+	waitpid(pipe->child, NULL, 0);
+
+	pipe->child = 0;
+}
+
+
+static void handle_setup(struct usb_ctrlrequest *req)
+{
+	unsigned int i;
+
+	switch (req->bRequest) {
+	case IIO_USD_CMD_RESET_PIPES:
+		for (i = 0; i < NB_PIPES; i++)
+			usb_close_pipe(i);
+		break;
+	case IIO_USD_CMD_OPEN_PIPE:
+		usb_open_pipe(le16toh(req->wValue));
+		break;
+	case IIO_USD_CMD_CLOSE_PIPE:
+		usb_close_pipe(le16toh(req->wValue));
+		break;
+	}
+}
+
 static void handle_event(int fd, int argc, char **argv,
 		struct usb_functionfs_event *event)
 {
@@ -161,7 +242,9 @@ static void handle_event(int fd, int argc, char **argv,
 		printf("Got event: DISABLE\n");
 		break;
 	case FUNCTIONFS_SETUP:
-		printf("Got event: SETUP\n");
+/*		printf("Got event: SETUP\n");*/
+		handle_setup(&event->u.setup);
+		read(fd, NULL, 0);
 		break;
 	case FUNCTIONFS_SUSPEND:
 		printf("Got event: SUSPEND\n");
@@ -176,8 +259,6 @@ static void handle_event(int fd, int argc, char **argv,
 int main(int argc, char **argv)
 {
 	int fd, ret;
-	pid_t child[NB_PIPES];
-	char **argv_new;
 	unsigned int i;
 
 	if (argc < 3) {
@@ -192,7 +273,9 @@ int main(int argc, char **argv)
 	memcpy(argv_new, argv + 2, (argc - 2) * sizeof(*argv));
 	argv_new[argc - 2] = NULL;
 
-	fd = open(argv[1], O_RDWR);
+	snprintf(ep0_path, sizeof(ep0_path), "%s", argv[1]);
+
+	fd = open(ep0_path, O_RDWR);
 	if (fd < 0) {
 		perror("Unable to open ep0 node");
 		return EXIT_FAILURE;
@@ -204,43 +287,12 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
-	for (i = 0; i < NB_PIPES; i++) {
-		child[i] = fork();
-		if (child[i])
-			continue;
-
-		close(fd);
-
-		if (stdio_redirect(argv[1], i)) {
-			fprintf(stderr, "Unable to do IO redirection\n");
-			return EXIT_FAILURE;
-		}
-
-		if (execvp(*argv_new, argv_new) < 0)
-			return EXIT_FAILURE;
-	}
-
-	free(argv_new);
-
 	while (1) {
-		int has_childs = 0;
 		struct usb_functionfs_event event;
 		struct pollfd pollfd = {
 			.fd = fd,
 			.events = POLLIN,
 		};
-
-		for (i = 0; i < NB_PIPES; i++) {
-			if (child[i]) {
-				has_childs = 1;
-
-				if (waitpid(child[i], &ret, WNOHANG))
-					child[i] = 0;
-			}
-		}
-
-		if (!has_childs)
-			break;
 
 		ret = poll(&pollfd, 1, 100);
 		if (ret < 0) {
@@ -260,6 +312,11 @@ int main(int argc, char **argv)
 
 		handle_event(fd, argc, argv, &event);
 	}
+
+	for (i = 0; i < NB_PIPES; i++)
+		usb_close_pipe(i);
+
+	free(argv_new);
 
 	close(fd);
 	return ret;
