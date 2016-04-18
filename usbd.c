@@ -12,7 +12,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#define NAME u8"USBD"
+#define NAME u8"IIO"
 
 #define LE32(x) ((__BYTE_ORDER != __BIG_ENDIAN) ? (x) : __bswap_constant_32(x))
 #define LE16(x) ((__BYTE_ORDER != __BIG_ENDIAN) ? (x) : __bswap_constant_16(x))
@@ -73,6 +73,7 @@ static const struct usb_ffs_header ffs_header = {
 			.bDescriptorType = USB_DT_INTERFACE, \
 			.bNumEndpoints = NB_PIPES * 2, \
 			.bInterfaceClass = USB_CLASS_COMM, \
+			.iInterface = 1, \
 		}, \
 		.eps = { \
 			EP_SET(0, packetsize), \
