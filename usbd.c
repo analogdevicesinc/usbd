@@ -256,6 +256,21 @@ static void handle_event(int fd, int argc, char **argv,
 	}
 }
 
+static sig_atomic_t keep_running = 1;
+
+static void sig_handler(int sig)
+{
+	keep_running = 0;
+}
+
+static void set_handler(int signal_nb, void (*handler)(int))
+{
+	struct sigaction sig;
+	sigaction(signal_nb, NULL, &sig);
+	sig.sa_handler = handler;
+	sigaction(signal_nb, &sig, NULL);
+}
+
 int main(int argc, char **argv)
 {
 	int fd, ret;
@@ -287,7 +302,12 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
-	while (1) {
+	set_handler(SIGHUP, &sig_handler);
+	set_handler(SIGINT, &sig_handler);
+	set_handler(SIGTERM, &sig_handler);
+	set_handler(SIGPIPE, &sig_handler);
+
+	while (keep_running) {
 		struct usb_functionfs_event event;
 		struct pollfd pollfd = {
 			.fd = fd,
