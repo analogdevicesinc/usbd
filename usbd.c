@@ -206,15 +206,29 @@ static void usb_close_pipe(unsigned int ep)
 	pipe->child = 0;
 }
 
-
-static void handle_setup(struct usb_ctrlrequest *req)
+static void usb_close_pipes(void)
 {
 	unsigned int i;
 
+	for (i = 0; i < NB_PIPES; i++) {
+		if (usb_pipes[i].child)
+			kill(usb_pipes[i].child, SIGTERM);
+	}
+
+	for (i = 0; i < NB_PIPES; i++) {
+		if (usb_pipes[i].child) {
+			waitpid(usb_pipes[i].child, NULL, 0);
+			usb_pipes[i].child = 0;
+		}
+	}
+}
+
+
+static void handle_setup(struct usb_ctrlrequest *req)
+{
 	switch (req->bRequest) {
 	case IIO_USD_CMD_RESET_PIPES:
-		for (i = 0; i < NB_PIPES; i++)
-			usb_close_pipe(i);
+		usb_close_pipes();
 		break;
 	case IIO_USD_CMD_OPEN_PIPE:
 		usb_open_pipe(le16toh(req->wValue));
